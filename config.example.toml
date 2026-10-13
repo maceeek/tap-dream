@@ -19,9 +19,15 @@ history_days = 30                 # jak daleko do minulosti hledat záznamy na S
 since = ""                        # ignorovat vše před tímto datem (YYYY-MM-DD)
 
 [schedule]
-day_boundary = "12:00"            # „noc“ = od 12:00 do 12:00 následujícího dne
-capture_hours = "18:00-10:00"     # použít jen záběry z tohoto okna (prázdné = celý den)
-grace_minutes = 30                # kolik minut po konci noci počkat, než se zpracuje
+# Jeden „den“ = noc a šlofíky po ní, od day_boundary do stejné hodiny dalšího dne.
+# Zvolte čas, kdy miminko obvykle nespí (ať se nerozdělí šlofík).
+day_boundary = "17:00"
+night_hours = "18:00-08:00"       # noční okno (víc oken oddělte čárkou; prázdné = celý den jako noc)
+naps = true                       # přes den hledat šlofíky (mimo noční okno)
+nap_hours = ""                    # omezit hledání šlofíků, např. "09:00-11:30, 12:30-16:00" (prázdné = celý den)
+nap_min_minutes = 10              # kratší pobyt v záběru není šlofík (rodiče jen prošli místností)
+nap_gap_minutes = 5               # šlofík končí, když v záběru tak dlouho nikdo není
+grace_minutes = 30                # kolik minut po konci dne počkat, než se zpracuje
 keep_downloads = false            # po zpracování smazat stažené záznamy
 daemon_interval_secs = 3600
 
@@ -79,6 +85,7 @@ interest_prompts = [
 [overlay]
 enabled = true
 template = "Noc {night} · {date} · {age}"   # {night} {date} {age} {time} {weekday}
+nap_template = "Šlofík · {date} · {age}"    # titulek u šlofíků ({date} = den šlofíku)
 start_date = ""                   # noc č. 1 (prázdné = birth_date, jinak první zpracovaná noc)
 birth_date = ""                   # YYYY-MM-DD, pro {age}
 language = "cs"                   # cs | en

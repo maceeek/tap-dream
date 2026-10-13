@@ -1,7 +1,8 @@
-//! Turns one night of recordings into one timelapse segment.
+//! Turns one day of recordings (a night and the naps after it) into one
+//! timelapse segment.
 
 use super::analyzer::Analyzer;
-use super::select::{FrameInfo, Selector, SelectorConfig};
+use super::select::{FrameInfo, Part, Selector, SelectorConfig};
 use super::Ctx;
 use crate::db::{FrameRow, NightStats, Recording};
 use crate::timeutil::{age_label, date_label, weekday_label};
@@ -19,36 +20,49 @@ pub struct NightOutput {
     pub stats: NightStats,
 }
 
-fn caption(ctx: &Ctx, night: NaiveDate, t: f64) -> String {
+fn caption(ctx: &Ctx, night: NaiveDate, t: f64, part: Part) -> String {
     let o = &ctx.cfg.overlay;
-    let mut s = o.template.clone();
+    let local = ctx.clock.zone.to_local(t as i64);
+    // a night is labelled with its evening's date, a nap with its own day
+    let (mut s, date) = match part {
+        Part::Nap => (o.nap_template.clone(), local.date()),
+        _ => (o.template.clone(), night),
+    };
     let n = (night - ctx.night_one).num_days() + 1;
     s = s.replace("{night}", &n.to_string());
-    s = s.replace("{date}", &date_label(night, &o.language));
-    s = s.replace("{weekday}", weekday_label(night, &o.language));
-    let local = ctx.clock.zone.to_local(t as i64);
+    s = s.replace("{date}", &date_label(date, &o.language));
+    s = s.replace("{weekday}", weekday_label(date, &o.language));
     s = s.replace("{time}", &local.format("%H:%M").to_string());
-    // the whole night shows the same age (the evening's date)
-    let age = ctx.birth.map(|b| age_label(b, night, &o.language)).unwrap_or_default();
+    let age = ctx.birth.map(|b| age_label(b, date, &o.language)).unwrap_or_default();
     s = s.replace("{age}", &age);
     // tidy separators left by empty placeholders
     let s = s.replace("·  ·", "·");
     s.trim().trim_end_matches('·').trim().trim_start_matches('·').trim().to_string()
 }
 
-/// Pieces of recordings to decode: (recording, offset in file, length, absolute start).
-fn plan(recs: &[Recording], intervals: &[(i64, i64)]) -> Vec<(Recording, f64, f64, i64)> {
+/// A piece of a recording to decode.
+struct Piece {
+    rec: Recording,
+    /// offset into the file and length, seconds
+    offset: f64,
+    length: f64,
+    /// absolute start (unix time)
+    start: i64,
+    part: Part,
+}
+
+fn plan(recs: &[Recording], ranges: &[(i64, i64, Part)]) -> Vec<Piece> {
     let mut out = Vec::new();
     for r in recs {
-        for &(a, b) in intervals {
+        for &(a, b, part) in ranges {
             let s = r.start_ts.max(a);
             let e = r.end_ts.min(b);
             if e > s {
-                out.push((r.clone(), (s - r.start_ts) as f64, (e - s) as f64, s));
+                out.push(Piece { rec: r.clone(), offset: (s - r.start_ts) as f64, length: (e - s) as f64, start: s, part });
             }
         }
     }
-    out.sort_by_key(|p| p.3);
+    out.sort_by_key(|p| p.start);
     out
 }
 
@@ -69,10 +83,12 @@ pub fn process(ctx: &mut Ctx, night: NaiveDate, recs: &[Recording], blocks: Vec<
         interest_weight: cfg.scene.interest_weight,
         before: cfg.privacy.before_secs,
         after: cfg.privacy.after_secs,
+        nap_min: cfg.schedule.nap_min_minutes * 60.0,
+        nap_gap: cfg.schedule.nap_gap_minutes * 60.0,
     };
     let mut selector: Selector<Vec<u8>> = Selector::new(sel_cfg, blocks);
-    let pieces = plan(recs, &ctx.clock.capture_intervals(night));
-    let total: f64 = pieces.iter().map(|p| p.2).sum();
+    let pieces = plan(recs, &ctx.clock.plan(night));
+    let total: f64 = pieces.iter().map(|p| p.length).sum();
     let tmp = segment_dir.join(format!("{night}.mp4.tmp"));
     let mut encoder: Option<Encoder> = None;
     let mut rows: Vec<FrameRow> = Vec::new();
@@ -89,7 +105,7 @@ pub fn process(ctx: &mut Ctx, night: NaiveDate, recs: &[Recording], blocks: Vec<
                 if best.as_ref().map(|(s, _, _)| info.score() > *s).unwrap_or(true) {
                     best = Some((info.score(), info.t, data.clone()));
                 }
-                let text = ctx.overlay.is_some().then(|| caption(ctx, night, info.t));
+                let text = ctx.overlay.is_some().then(|| caption(ctx, night, info.t, info.part));
                 if let (Some(o), Some(text)) = (ctx.overlay.as_mut(), text) {
                     o.draw(&mut data, w, h, &text);
                 }
@@ -114,11 +130,11 @@ pub fn process(ctx: &mut Ctx, night: NaiveDate, recs: &[Recording], blocks: Vec<
     let mut models = std::mem::replace(&mut ctx.models, super::analyzer::Models { nudenet: None, clip: None });
     let result = (|| -> Result<()> {
         let mut analyzer = Analyzer::new(&mut models, &cfg);
-        for (rec, offset, length, abs_start) in &pieces {
+        for piece in &pieces {
             if ctx.stop.load(Ordering::Relaxed) {
                 anyhow::bail!("interrupted");
             }
-            let path = PathBuf::from(rec.file.as_deref().unwrap_or_default());
+            let path = PathBuf::from(piece.rec.file.as_deref().unwrap_or_default());
             let keyframes_only = match cfg.analysis.decode.as_str() {
                 "keyframes" => true,
                 "all" => false,
@@ -131,8 +147,8 @@ pub fn process(ctx: &mut Ctx, night: NaiveDate, recs: &[Recording], blocks: Vec<
                 crop: cfg.timelapse.crop.clone(),
                 cuda: ctx.cuda_decode,
                 keyframes_only,
-                start: *offset,
-                length: Some(*length),
+                start: piece.offset,
+                length: Some(piece.length),
                 still: false,
             };
             // A separate thread keeps ffmpeg busy while we analyse.
@@ -166,14 +182,15 @@ pub fn process(ctx: &mut Ctx, night: NaiveDate, recs: &[Recording], blocks: Vec<
             analyzer.reset_motion();
             let mut i = 0u64;
             for frame in rx.iter() {
-                let t = *abs_start as f64 + i as f64 / afps;
+                let t = piece.start as f64 + i as f64 / afps;
                 i += 1;
                 if t <= last_t {
                     continue; // overlapping recordings
                 }
                 last_t = t;
                 let yuv = Yuv::new(&frame, w, h);
-                let info = analyzer.analyze(t, &yuv)?;
+                let mut info = analyzer.analyze(t, &yuv)?;
+                info.part = piece.part;
                 let out = selector.push(info, || frame.clone());
                 emit(ctx, out, &mut encoder, &mut rows)?;
                 if i.is_multiple_of(30) {
@@ -194,7 +211,7 @@ pub fn process(ctx: &mut Ctx, night: NaiveDate, recs: &[Recording], blocks: Vec<
                 }
                 Err(e) => log::warn!("skipping unreadable recording {}: {e:#}", path.display()),
             }
-            done += length;
+            done += piece.length;
             pb.set_position(done as u64);
         }
         let out = selector.finish();
@@ -212,6 +229,8 @@ pub fn process(ctx: &mut Ctx, night: NaiveDate, recs: &[Recording], blocks: Vec<
     stats.skipped_private = (s.private + s.dropped_private) as i64;
     stats.skipped_idle = s.idle as i64;
     stats.skipped_dark = s.dark as i64;
+    stats.nap_frames = s.emitted_nap as i64;
+    stats.skipped_short = s.dropped_short as i64;
     if let Some((score, t, data)) = &best {
         stats.best_ts = Some(*t);
         stats.best_score = Some(*score as f64);
@@ -256,8 +275,8 @@ mod tests {
             attempts: 0,
             last_error: None,
         };
-        let p = plan(&[rec(0, 100), rec(150, 400)], &[(50, 200), (300, 350)]);
-        let v: Vec<(f64, f64, i64)> = p.iter().map(|x| (x.1, x.2, x.3)).collect();
-        assert_eq!(v, vec![(50.0, 50.0, 50), (0.0, 50.0, 150), (150.0, 50.0, 300)]);
+        let p = plan(&[rec(0, 100), rec(150, 400)], &[(50, 200, Part::Night), (300, 350, Part::Nap)]);
+        let v: Vec<(f64, f64, i64, Part)> = p.iter().map(|x| (x.offset, x.length, x.start, x.part)).collect();
+        assert_eq!(v, vec![(50.0, 50.0, 50, Part::Night), (0.0, 50.0, 150, Part::Night), (150.0, 50.0, 300, Part::Nap)]);
     }
 }

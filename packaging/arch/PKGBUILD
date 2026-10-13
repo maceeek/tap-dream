@@ -1,0 +1,77 @@
+# Maintainer: tapdream contributors
+#
+# Builds the git checkout this file lives in (packaging/arch -> repository root):
+#   cd packaging/arch && makepkg -si
+# Only committed changes are built (makepkg clones the local repository).
+
+pkgname=tapdream-git
+pkgver=r0
+pkgrel=1
+pkgdesc="Ever-growing, privacy-filtered timelapse from Tapo camera recordings"
+arch=('x86_64' 'aarch64')
+url="https://github.com/maceeek/tap-dream"
+license=('MIT')
+depends=('ffmpeg' 'openssl' 'gcc-libs' 'glibc' 'curl' 'ttf-dejavu')
+makedepends=('cargo' 'git')
+optdepends=('onnxruntime-cuda: AI models on an NVIDIA GPU (recommended)'
+            'onnxruntime: AI models on the CPU'
+            'nvidia-utils: NVDEC decoding and NVENC encoding on an NVIDIA GPU')
+provides=('tapdream')
+conflicts=('tapdream')
+backup=('etc/tapdream/config.toml')
+install=tapdream.install
+# C code built by cargo (SQLite) must not be LTO-compiled for rustc's linker
+options=('!lto')
+source=("tap-dream::git+file://${startdir%/packaging/arch}"
+        'tapdream.sysusers'
+        'tapdream.tmpfiles')
+sha256sums=('SKIP'
+            'SKIP'
+            'SKIP')
+
+pkgver() {
+  cd tap-dream
+  printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd tap-dream
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd tap-dream
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+check() {
+  cd tap-dream
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen --release
+}
+
+package() {
+  cd tap-dream
+  install -Dm755 target/release/tapdream "$pkgdir/usr/bin/tapdream"
+
+  # systemd units point to the packaged binary
+  for unit in tapdream.service tapdream-run.service tapdream-run.timer; do
+    sed 's|/usr/local/bin/tapdream|/usr/bin/tapdream|' "deploy/$unit" \
+      | install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/system/$unit"
+  done
+  install -Dm644 "$srcdir/tapdream.sysusers" "$pkgdir/usr/lib/sysusers.d/tapdream.conf"
+  install -Dm644 "$srcdir/tapdream.tmpfiles" "$pkgdir/usr/lib/tmpfiles.d/tapdream.conf"
+
+  # system-wide configuration; the password goes to /etc/tapdream/env (see README)
+  sed 's|^data_dir = .*|data_dir = "/var/lib/tapdream"|' config.example.toml \
+    | install -Dm644 /dev/stdin "$pkgdir/etc/tapdream/config.toml"
+
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 NOTICE "$pkgdir/usr/share/licenses/$pkgname/NOTICE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 config.example.toml "$pkgdir/usr/share/doc/$pkgname/config.example.toml"
+}

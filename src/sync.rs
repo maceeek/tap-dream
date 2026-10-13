@@ -69,13 +69,13 @@ pub fn discover(cfg: &Config, db: &Db, clock: &NightClock, tapo: &mut Tapo, repo
     Ok(correction)
 }
 
-/// Is any part of the recording inside a capture window of a night that still needs it?
-fn is_needed(db: &Db, clock: &NightClock, rec: &Recording) -> Result<bool> {
-    for night in clock.nights_overlapping(rec.start_ts, rec.end_ts) {
+/// Does a day that is not processed yet use (or check for privacy) part of this recording?
+pub fn is_needed(db: &Db, clock: &NightClock, rec: &Recording) -> Result<bool> {
+    for night in clock.nights_touching(rec.start_ts, rec.end_ts) {
         if db.night_status(&night.to_string())?.as_deref() == Some("processed") {
             continue;
         }
-        if clock.capture_intervals(night).iter().any(|&(a, b)| rec.start_ts < b && rec.end_ts > a) {
+        if clock.plan(night).iter().any(|&(a, b, _)| rec.start_ts < b && rec.end_ts > a) {
             return Ok(true);
         }
     }

@@ -128,13 +128,13 @@ pub fn build_ctx(cfg: &Config, db: &Db, clock: &NightClock, stop: Arc<AtomicBool
     })
 }
 
-/// Nights that are over, fully downloaded and not processed yet.
+/// Days that are over, fully downloaded and not processed yet.
 pub fn ready_nights(cfg: &Config, db: &Db, clock: &NightClock) -> Result<Vec<NaiveDate>> {
     let now = now_ts();
     let discovered_until: i64 = db.meta_get("last_discovery")?.and_then(|v| v.parse().ok()).unwrap_or(0);
     let mut candidates = BTreeSet::new();
     for r in db.recordings_with_status(RecStatus::Downloaded)? {
-        for n in clock.nights_overlapping(r.start_ts, r.end_ts) {
+        for n in clock.nights_touching(r.start_ts, r.end_ts) {
             candidates.insert(n);
         }
     }
@@ -144,21 +144,25 @@ pub fn ready_nights(cfg: &Config, db: &Db, clock: &NightClock) -> Result<Vec<Nai
         if db.night_status(&key)?.as_deref() == Some("processed") {
             continue;
         }
-        let (_, end) = clock.night_range(night);
+        // the plan includes the privacy context just after the day
+        let end = clock.plan_end(night);
         let settle = end + cfg.schedule.grace_minutes * 60;
         if now < settle || discovered_until < end + cfg.camera.min_age_secs {
             continue; // not over yet, or the camera was not asked about its last hours
         }
-        let intervals = clock.capture_intervals(night);
-        let (s, e) = (intervals.first().map(|i| i.0).unwrap_or(0), intervals.last().map(|i| i.1).unwrap_or(0));
+        let plan = clock.plan(night);
+        let (s, e) = (plan.first().map(|i| i.0).unwrap_or(0), plan.last().map(|i| i.1).unwrap_or(0));
         let mut usable = false;
         for r in db.recordings_overlapping(s, e)? {
-            if !intervals.iter().any(|&(a, b)| r.start_ts < b && r.end_ts > a) {
+            let overlaps = |p: &&(i64, i64, crate::timeutil::Part)| r.start_ts < p.1 && r.end_ts > p.0;
+            if !plan.iter().any(|p| overlaps(&p)) {
                 continue;
             }
             match r.status {
                 RecStatus::New => continue 'nights, // still waiting for the download
-                RecStatus::Downloaded => usable = true,
+                RecStatus::Downloaded => {
+                    usable |= plan.iter().filter(|p| p.2 != crate::timeutil::Part::Context).any(|p| overlaps(&p));
+                }
                 _ => {}
             }
         }
@@ -207,25 +211,28 @@ pub fn process_ready(cfg: &Config, db: &Db, clock: &NightClock, stop: Arc<Atomic
 
 pub fn process_one(ctx: &mut Ctx, db: &Db, night: NaiveDate, seg_dir: &Path) -> Result<()> {
     let clock = ctx.clock.clone();
-    let (s, e) = clock.night_range(night);
+    let plan = clock.plan(night);
+    let (s, e) = (plan.first().map(|p| p.0).unwrap_or(0), plan.last().map(|p| p.1).unwrap_or(0));
     let recs: Vec<_> = db
         .recordings_overlapping(s, e)?
         .into_iter()
         .filter(|r| r.status == RecStatus::Downloaded && r.file.as_deref().map(|f| Path::new(f).exists()).unwrap_or(false))
         .collect();
-    log::info!("processing night {night} ({} recordings)", recs.len());
+    log::info!("processing day {night} ({} recordings)", recs.len());
     let started = std::time::Instant::now();
     let out = night::process(ctx, night, &recs, blocks_for(db)?, seg_dir)?;
     let st = &out.stats;
     let afps = ctx.cfg.analysis.fps;
     let mins = |n: i64| n as f64 / afps / 60.0;
     log::info!(
-        "night {night}: {} frames kept from {:.0} min analysed; skipped {:.0} min private, {:.0} min empty/static, {:.0} min dark ({:.0} s)",
+        "day {night}: {} frames kept ({} from naps) from {:.0} min analysed; skipped {:.0} min private, {:.0} min empty/static, {:.0} min dark, {} frames of short daytime visits ({:.0} s)",
         st.emitted,
+        st.nap_frames,
         mins(st.analyzed),
         mins(st.skipped_private),
         mins(st.skipped_idle),
         mins(st.skipped_dark),
+        st.skipped_short,
         started.elapsed().as_secs_f64()
     );
     let now = now_ts();
@@ -257,13 +264,7 @@ pub fn purge_downloads(cfg: &Config, db: &Db, clock: &NightClock) -> Result<()> 
         return Ok(());
     }
     for r in db.recordings_with_status(RecStatus::Downloaded)? {
-        let mut needed = false;
-        for n in clock.nights_overlapping(r.start_ts, r.end_ts) {
-            if db.night_status(&n.to_string())?.as_deref() != Some("processed") {
-                needed = true;
-            }
-        }
-        if !needed {
+        if !crate::sync::is_needed(db, clock, &r)? {
             if let Some(f) = &r.file {
                 let _ = std::fs::remove_file(f);
             }
@@ -530,8 +531,9 @@ pub fn reset_night(db: &Db, clock: &NightClock, night: NaiveDate) -> Result<()> 
 pub fn describe_night_stats(st: &NightStats, afps: f64) -> String {
     let m = |n: i64| n as f64 / afps / 60.0;
     format!(
-        "{:>5} frames | analysed {:>5.0} min | private {:>4.0} min | empty {:>5.0} min | dark {:>4.0} min",
+        "{:>5} frames ({:>4} naps) | analysed {:>5.0} min | private {:>4.0} min | empty {:>5.0} min | dark {:>4.0} min",
         st.emitted,
+        st.nap_frames,
         m(st.analyzed),
         m(st.skipped_private),
         m(st.skipped_idle),

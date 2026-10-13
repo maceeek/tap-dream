@@ -144,7 +144,10 @@ fn open_app(cli: &Cli, lock: bool) -> Result<App> {
         None
     };
     let db = Db::open(&cfg.general.data_dir.join("index.db"))?;
-    let clock = NightClock::new(Zone::parse(&cfg.general.timezone)?, &cfg.schedule.day_boundary, &cfg.schedule.capture_hours)?;
+    let s = &cfg.schedule;
+    let clock = NightClock::new(Zone::parse(&cfg.general.timezone)?, &s.day_boundary, &s.night_hours)?
+        .with_naps(s.naps, &s.nap_hours)?
+        .with_privacy_margins(cfg.privacy.before_secs, cfg.privacy.after_secs);
     Ok(App { cfg, db, clock, _lock: lock_file })
 }
 

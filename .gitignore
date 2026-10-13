@@ -3,3 +3,8 @@
 /config.toml
 /tapdream-data
 *.part
+# makepkg
+/packaging/arch/src
+/packaging/arch/pkg
+/packaging/arch/tap-dream
+/packaging/arch/*.pkg.tar.*

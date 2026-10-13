@@ -63,6 +63,10 @@ pub struct NightStats {
     pub skipped_private: i64,
     pub skipped_idle: i64,
     pub skipped_dark: i64,
+    /// Frames from naps (included in `emitted`).
+    pub nap_frames: i64,
+    /// Frames of daytime visits too short to count as a nap.
+    pub skipped_short: i64,
     pub best_ts: Option<f64>,
     pub best_score: Option<f64>,
 }
@@ -137,6 +141,8 @@ CREATE TABLE IF NOT EXISTS nights(
     skipped_private INTEGER NOT NULL DEFAULT 0,
     skipped_idle INTEGER NOT NULL DEFAULT 0,
     skipped_dark INTEGER NOT NULL DEFAULT 0,
+    nap_frames INTEGER NOT NULL DEFAULT 0,
+    skipped_short INTEGER NOT NULL DEFAULT 0,
     best_ts REAL,
     best_score REAL,
     processed_at INTEGER NOT NULL,
@@ -196,7 +202,20 @@ impl Db {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(30))?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn })
+        let db = Self { conn };
+        // columns added after the first release
+        db.ensure_column("nights", "nap_frames", "INTEGER NOT NULL DEFAULT 0")?;
+        db.ensure_column("nights", "skipped_short", "INTEGER NOT NULL DEFAULT 0")?;
+        Ok(db)
+    }
+
+    fn ensure_column(&self, table: &str, column: &str, decl: &str) -> Result<()> {
+        let mut st = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let exists = st.query_map([], |r| r.get::<_, String>(1))?.filter_map(|c| c.ok()).any(|c| c == column);
+        if !exists {
+            self.conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))?;
+        }
+        Ok(())
     }
 
     pub fn meta_get(&self, key: &str) -> Result<Option<String>> {
@@ -301,7 +320,8 @@ impl Db {
     /// (night, status, statistics, segment id)
     pub fn list_nights(&self) -> Result<Vec<NightRow>> {
         let mut st = self.conn.prepare(
-            "SELECT night, status, analyzed, emitted, skipped_private, skipped_idle, skipped_dark, best_ts, best_score, segment_id
+            "SELECT night, status, analyzed, emitted, skipped_private, skipped_idle, skipped_dark, best_ts, best_score, segment_id,
+                    nap_frames, skipped_short
              FROM nights ORDER BY night",
         )?;
         let rows = st.query_map([], |r| {
@@ -314,6 +334,8 @@ impl Db {
                     skipped_private: r.get(4)?,
                     skipped_idle: r.get(5)?,
                     skipped_dark: r.get(6)?,
+                    nap_frames: r.get(10)?,
+                    skipped_short: r.get(11)?,
                     best_ts: r.get(7)?,
                     best_score: r.get(8)?,
                 },
@@ -333,13 +355,30 @@ impl Db {
         error: Option<&str>,
     ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO nights(night, status, segment_id, analyzed, emitted, skipped_private, skipped_idle, skipped_dark, best_ts, best_score, processed_at, error)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO nights(night, status, segment_id, analyzed, emitted, skipped_private, skipped_idle, skipped_dark, best_ts, best_score,
+                                processed_at, error, nap_frames, skipped_short)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(night) DO UPDATE SET status=excluded.status, segment_id=excluded.segment_id, analyzed=excluded.analyzed,
                emitted=excluded.emitted, skipped_private=excluded.skipped_private, skipped_idle=excluded.skipped_idle,
                skipped_dark=excluded.skipped_dark, best_ts=excluded.best_ts, best_score=excluded.best_score,
-               processed_at=excluded.processed_at, error=excluded.error",
-            params![night, status, segment_id, s.analyzed, s.emitted, s.skipped_private, s.skipped_idle, s.skipped_dark, s.best_ts, s.best_score, now, error],
+               processed_at=excluded.processed_at, error=excluded.error, nap_frames=excluded.nap_frames,
+               skipped_short=excluded.skipped_short",
+            params![
+                night,
+                status,
+                segment_id,
+                s.analyzed,
+                s.emitted,
+                s.skipped_private,
+                s.skipped_idle,
+                s.skipped_dark,
+                s.best_ts,
+                s.best_score,
+                now,
+                error,
+                s.nap_frames,
+                s.skipped_short
+            ],
         )?;
         Ok(())
     }

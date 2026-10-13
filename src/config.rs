@@ -82,10 +82,20 @@ impl Default for Camera {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Schedule {
-    /// A "night" lasts from this local time until the same time the next day.
+    /// One "day" (= a night and the naps after it) lasts from this local time
+    /// until the same time the next day. Pick a time the baby is usually awake.
     pub day_boundary: String,
-    /// Only footage inside this local time window is used, e.g. "18:00-10:00". Empty = all day.
-    pub capture_hours: String,
+    /// The night window(s), e.g. "18:00-08:00" (comma separated). Empty = the whole day counts as night.
+    #[serde(alias = "capture_hours")]
+    pub night_hours: String,
+    /// Also use daytime footage: naps (somebody in the picture long enough).
+    pub naps: bool,
+    /// Where to look for naps, e.g. "09:00-11:30, 12:30-16:00". Empty = all of the day outside the night.
+    pub nap_hours: String,
+    /// Daytime stretches shorter than this are not naps (parents passing through the room).
+    pub nap_min_minutes: f64,
+    /// A nap ends after this long without anybody in the picture.
+    pub nap_gap_minutes: f64,
     /// Minutes to wait after a night ended before it is processed.
     pub grace_minutes: i64,
     /// Keep downloaded recordings after their night was processed.
@@ -97,8 +107,12 @@ pub struct Schedule {
 impl Default for Schedule {
     fn default() -> Self {
         Self {
-            day_boundary: "12:00".into(),
-            capture_hours: String::new(),
+            day_boundary: "17:00".into(),
+            night_hours: String::new(),
+            naps: true,
+            nap_hours: String::new(),
+            nap_min_minutes: 10.0,
+            nap_gap_minutes: 5.0,
             grace_minutes: 30,
             keep_downloads: false,
             daemon_interval_secs: 3600,
@@ -313,8 +327,10 @@ pub struct Overlay {
     pub enabled: bool,
     /// TTF/OTF font. Empty = first usable system font.
     pub font: String,
-    /// Placeholders: {night} {date} {age} {time} {weekday}
+    /// Caption of night frames. Placeholders: {night} {date} {age} {time} {weekday}
     pub template: String,
+    /// Caption of nap frames ({date} is the day of the nap).
+    pub nap_template: String,
     /// Night number 1. Empty = birth_date, or the first processed night.
     pub start_date: String,
     /// Baby's birth date (YYYY-MM-DD) for {age}.
@@ -333,6 +349,7 @@ impl Default for Overlay {
             enabled: true,
             font: String::new(),
             template: "Noc {night} · {date}".into(),
+            nap_template: "Šlofík · {date}".into(),
             start_date: String::new(),
             birth_date: String::new(),
             language: "cs".into(),
@@ -456,5 +473,12 @@ mod tests {
         let cfg: Config = toml::from_str(EXAMPLE).unwrap();
         cfg.validate().unwrap();
         assert_eq!(cfg.camera.media_port, 8800);
+        assert!(cfg.schedule.naps);
+    }
+
+    #[test]
+    fn old_capture_hours_name_still_works() {
+        let cfg: Config = toml::from_str("[schedule]\ncapture_hours = \"18:00-10:00\"\n").unwrap();
+        assert_eq!(cfg.schedule.night_hours, "18:00-10:00");
     }
 }

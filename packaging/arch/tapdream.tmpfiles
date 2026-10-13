@@ -1,0 +1,2 @@
+d /var/lib/tapdream 0750 tapdream tapdream -
+d /etc/tapdream 0755 root root -

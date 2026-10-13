@@ -1,0 +1,17 @@
+post_install() {
+  cat <<'MSG'
+==> tapdream: next steps
+    1. edit /etc/tapdream/config.toml (camera.host, night_hours, overlay.birth_date)
+    2. echo 'TAPDREAM_CLOUD_PASSWORD=...' > /etc/tapdream/env && chmod 600 /etc/tapdream/env
+    3. alias td='sudo systemd-run --pty --wait --collect --quiet -p User=tapdream \
+         -p WorkingDirectory=/var/lib/tapdream -p EnvironmentFile=-/etc/tapdream/env \
+         /usr/bin/tapdream -c /etc/tapdream/config.toml'
+    4. td models fetch && td doctor --camera
+    5. systemctl enable --now tapdream.service
+    See /usr/share/doc/tapdream-git/README.md
+MSG
+}
+
+post_upgrade() {
+  :
+}

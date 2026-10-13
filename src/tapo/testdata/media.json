@@ -1,0 +1,10 @@
+{
+ "www_authenticate": "Digest realm=\"TP-LINK IP-Camera\",nonce=\"4d2a1b3c5e6f\",opaque=\"0f1e2d3c\",encrypt_type=\"3\"",
+ "password": "cloud-pass",
+ "hashed": "A46B113702D34BD8DD1EDB1463F0239C7A4016A31A9B1970E3AF6D5B3D0FC39A",
+ "cnonce": "c0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ffeec0ffee",
+ "response": "178fa6e31383eb65b07dc77e6940c625",
+ "key_exchange": "username=\"admin\" nonce=\"ABCDEF1234567890\"",
+ "key": "ffaa2cca7b3546390f137e783ca82509",
+ "iv": "9d45b2979380200128ce4f2493ac06fb"
+}

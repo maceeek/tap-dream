@@ -1,0 +1,16 @@
+[Unit]
+Description=tapdream - download new recordings and process finished nights
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=tapdream
+Group=tapdream
+WorkingDirectory=/var/lib/tapdream
+Environment=TAPDREAM_CONFIG=/etc/tapdream/config.toml
+EnvironmentFile=-/etc/tapdream/env
+ExecStart=/usr/local/bin/tapdream run
+KillSignal=SIGINT
+TimeoutStopSec=600
+Nice=10

@@ -1,0 +1,19 @@
+tapdream includes work derived from the following projects:
+
+* pytapo (https://github.com/JurajNyiri/pytapo) - MIT License,
+  Copyright (c) 2020 Juraj Nyíri. The camera control transports, the media
+  stream session and the recording download logic in src/tapo/ are ports of
+  pytapo 3.4.26.
+
+* tapo-v4-protocol (https://github.com/freeKC/tapo-v4-protocol) - MIT License.
+  SPAKE2+ client used by the TPAP transport (via pytapo).
+
+* OpenAI CLIP (https://github.com/openai/CLIP) - MIT License,
+  Copyright (c) 2021 OpenAI. assets/bpe_simple_vocab_16e6.txt.gz and the
+  tokenizer in src/vision/tokenizer.rs.
+
+Models downloaded by `tapdream models fetch` are not part of this repository:
+
+* NudeNet v3 detector weights (https://github.com/notAI-tech/NudeNet) - AGPL-3.0.
+* CLIP ViT-B/32 weights (OpenAI, MIT) in the ONNX export published by
+  clip-as-service (Jina AI, Apache-2.0).

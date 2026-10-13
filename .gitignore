@@ -1,0 +1,5 @@
+/target
+# local configuration contains the camera password
+/config.toml
+/tapdream-data
+*.part

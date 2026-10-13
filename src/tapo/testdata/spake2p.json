@@ -1,0 +1,40 @@
+{
+ "crypt": [
+  [
+   "secret",
+   "$5$saltstring",
+   "$5$saltstring$C3o4O1TC6aRHF4FI.QSZMXtHbaj2gSXr4sUc/3NcUi."
+  ],
+  [
+   "Hello world!",
+   "$5$rounds=10000$saltstringsaltstring",
+   "$5$rounds=10000$saltstringsaltst$3xv.VbSHBb41AL9AvLeujZkZRBAwqFMz2.opqey6IcA"
+  ],
+  [
+   "2e24a3c4f53c4c7b",
+   "$5$abcdefgh$",
+   "$5$abcdefgh$.UX0ohzE9hDajNGPCWkhTGgZP8IFlySLa1nKXmQPxVC"
+  ],
+  [
+   "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "$5$rounds=1000$roundstoolow",
+   "$5$rounds=1000$roundstoolow$5jGdnfGVX/TLeceXwYgcAZp14CAfRq8gflV.g6SKt./"
+  ]
+ ],
+ "sha1": [
+  "passcode",
+  "4fcab400858d58a02b48f097bfdbc411e838ee12"
+ ],
+ "dev_salt": "AAECAwQFBgcICQoLDA0ODw==",
+ "iterations": 1000,
+ "dev_share": "BFDnoWAKHUNkdLcUWPsqWjBRveVemT2PXpPn6hDqw4kc5U1J6wEaJowjujQ8HJOE17nwk/opz/bfb5B7dA4sA+4=",
+ "dev_random": "ZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+f4CBgoM=",
+ "user_random": "yMnKy8zNzs/Q0dLT1NXW19jZ2tvc3d7f4OHi4+Tl5uc=",
+ "credential": "$5$Zm9vYmFyYmF6$YU0lCf4926SUdC80O9N9noOC1iAPm6oXzMLcKmOyDs7",
+ "random": "6003405732090767762900495383672744538025463596068435196182993970409529",
+ "xb": "BGsEDb3IBPueXDDkoPN3mKLV0XYfwDKR1g/y5gUXRct2WtAehKFhSByI9rSolDE5Hv1koWvNo5CTQV97nyHUD+I=",
+ "user_confirm": "ZUXUzAcn3Dkwl5ti1vcBl0Rew/GPW+qzfa6HEV5XteU=",
+ "dev_confirm": "lV21/xBUOIgqHlUxD+v3cvx4p0Ol5VfH9kQCN9tK77s=",
+ "key": "d5c033a3a97fcb186c3d233f00727ff9",
+ "nonce": "94ae99383f320d8ba6778972"
+}

@@ -1,0 +1,25 @@
+[Unit]
+Description=tapdream - nightly timelapse from a Tapo camera
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tapdream
+Group=tapdream
+WorkingDirectory=/var/lib/tapdream
+Environment=TAPDREAM_CONFIG=/etc/tapdream/config.toml
+# TAPDREAM_CLOUD_PASSWORD=... (chmod 600)
+EnvironmentFile=-/etc/tapdream/env
+ExecStart=/usr/local/bin/tapdream daemon
+Restart=on-failure
+RestartSec=300
+# Ctrl+C semantics: finish the current step on stop
+KillSignal=SIGINT
+TimeoutStopSec=600
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+
+[Install]
+WantedBy=multi-user.target

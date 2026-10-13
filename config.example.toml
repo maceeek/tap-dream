@@ -1,0 +1,91 @@
+# tapdream – ukázková konfigurace.
+# Zkopírujte jako config.toml, vyplňte [camera] a spusťte `tapdream doctor`.
+# Všechny relativní cesty v [general] jsou vůči tomuto souboru, ostatní vůči data_dir.
+
+[general]
+data_dir = "./tapdream-data"      # index (SQLite), stažené záznamy, segmenty, výsledné video
+timezone = "Europe/Prague"        # prázdné = časové pásmo systému
+
+[camera]
+host = "192.168.1.50"
+# Heslo k účtu TP-Link/Tapo (cloud), ke kterému je kamera přidaná. Komunikace je i tak čistě lokální.
+# Bezpečnější je proměnná prostředí TAPDREAM_CLOUD_PASSWORD nebo soubor:
+cloud_password = ""
+cloud_password_file = ""
+transport = "auto"                # auto | classic | tpap (novější firmware se SPAKE2+ přihlášením)
+download_method = "download"      # download (~10× rychleji než reálný čas) | playback (starý firmware)
+window_size = 200                 # 50 = stabilnější, 200 = rychlejší
+history_days = 30                 # jak daleko do minulosti hledat záznamy na SD kartě
+since = ""                        # ignorovat vše před tímto datem (YYYY-MM-DD)
+
+[schedule]
+day_boundary = "12:00"            # „noc“ = od 12:00 do 12:00 následujícího dne
+capture_hours = "18:00-10:00"     # použít jen záběry z tohoto okna (prázdné = celý den)
+grace_minutes = 30                # kolik minut po konci noci počkat, než se zpracuje
+keep_downloads = false            # po zpracování smazat stažené záznamy
+daemon_interval_secs = 3600
+
+[timelapse]
+output = "timelapse.mp4"          # TEN jeden stále se prodlužující soubor
+width = 1920
+height = 1080
+fps = 30
+crop = ""                         # volitelný ořez zdroje "w:h:x:y", např. jen postýlka
+codec = "hevc"                    # hevc | h264
+encoder = "auto"                  # auto (NVENC, když je k dispozici) | nvenc | software
+quality = 24                      # nižší = kvalitnější
+interval_secs = 20                # 1 snímek výstupu za 20 s reálného času, když se něco děje
+calm_interval_secs = 90           # ... když je klid (spánek)
+idle_interval_secs = 900          # ... když je scéna prázdná/statická; 0 = úplně vynechat
+highlights = true                 # nejzajímavější snímek každé noci jako JPEG
+
+[analysis]
+fps = 1.0                         # kolik snímků za sekundu záznamu se analyzuje
+decode = "auto"                   # auto | all | keyframes (jen klíčové snímky = mnohem rychlejší)
+hwaccel = "auto"                  # auto | cuda | none
+motion_pixel_threshold = 14
+motion_threshold = 0.004
+activity_hold_secs = 30
+idle_after_secs = 900             # bez CLIP modelu: tak dlouho bez pohybu = prázdná scéna
+dark_threshold = 10               # průměrný jas pod touto hodnotou = černý snímek
+
+[privacy]
+required = true                   # bez funkčního detektoru se nic nezpracuje
+model = "models/nudenet-640m.onnx"
+threshold = 0.25                  # citlivost detektoru (nižší = opatrnější)
+classes = ["FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED", "MALE_GENITALIA_EXPOSED", "BUTTOCKS_EXPOSED", "ANUS_EXPOSED"]
+before_secs = 120                 # zahodit i 2 minuty před detekcí ...
+after_secs = 300                  # ... a 5 minut po ní (kojení je souvislá činnost)
+clip_prompts = ["a photo of a woman breastfeeding a baby", "a photo of a mother nursing her baby at her breast"]
+clip_contrast_prompts = ["a photo of a woman holding a baby", "a photo of a man holding a baby", "a photo of a woman", "a photo of a man", "a photo of a person"]
+clip_threshold = 0.6              # CLIP jako druhý názor; ladit pomocí `tapdream inspect`
+clip_min_hits = 2                 # CLIP musí „vidět“ kojení aspoň 2× během 90 s
+
+[scene]
+enabled = true                    # CLIP: přítomnost lidí + „zajímavost“ snímku
+visual_model = "models/clip-vit-b32-visual.onnx"
+textual_model = "models/clip-vit-b32-textual.onnx"
+every_secs = 10
+presence_threshold = 0.35
+interest_weight = 0.7
+interest_prompts = [
+  "a photo of a smiling baby",
+  "a photo of a baby awake and looking around",
+  "a photo of a family cuddling together",
+  "a photo of a baby stretching its arms",
+  "a photo of a parent kissing a baby",
+]
+
+[overlay]
+enabled = true
+template = "Noc {night} · {date} · {age}"   # {night} {date} {age} {time} {weekday}
+start_date = ""                   # noc č. 1 (prázdné = birth_date, jinak první zpracovaná noc)
+birth_date = ""                   # YYYY-MM-DD, pro {age}
+language = "cs"                   # cs | en
+position = "bottom-left"
+size = 0.035
+
+[gpu]
+onnxruntime_lib = ""              # cesta k libonnxruntime.so (z balíčku onnxruntime-gpu); prázdné = autodetekce
+provider = "auto"                 # auto | cuda | tensorrt | cpu
+device_id = 0

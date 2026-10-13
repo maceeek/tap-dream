@@ -4,7 +4,7 @@
 use super::analyzer::Analyzer;
 use super::select::{FrameInfo, Part, Selector, SelectorConfig};
 use super::Ctx;
-use crate::db::{FrameRow, NightStats, Recording};
+use crate::db::{FrameRow, NightStats, Recording, Variant};
 use crate::timeutil::{age_label, date_label, weekday_label};
 use crate::video::ffmpeg::{self, DecodeOptions, Decoder, Encoder};
 use crate::vision::image::Yuv;
@@ -13,10 +13,15 @@ use chrono::NaiveDate;
 use crossbeam_channel::bounded;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
+/// A finished segment file and the frames in it.
+pub type NewSegment = (PathBuf, Vec<FrameRow>);
+
 pub struct NightOutput {
-    pub segment: Option<(PathBuf, Vec<FrameRow>)>,
+    /// Per timelapse version: the new segment (None = no usable frames).
+    pub segments: Vec<(Variant, Option<NewSegment>)>,
     pub stats: NightStats,
 }
 
@@ -66,7 +71,73 @@ fn plan(recs: &[Recording], ranges: &[(i64, i64, Part)]) -> Vec<Piece> {
     out
 }
 
-pub fn process(ctx: &mut Ctx, night: NaiveDate, recs: &[Recording], blocks: Vec<(f64, f64)>, segment_dir: &Path) -> Result<NightOutput> {
+/// One output of the day: the regular timelapse or the uncensored one.
+struct Track {
+    variant: Variant,
+    selector: Selector<Rc<Vec<u8>>>,
+    tmp: PathBuf,
+    encoder: Option<Encoder>,
+    rows: Vec<FrameRow>,
+}
+
+type Best = Option<(f32, f64, Vec<u8>)>;
+
+/// Captions, encodes and indexes the frames a selector released.
+fn emit(ctx: &mut Ctx, night: NaiveDate, track: &mut Track, frames: Vec<(FrameInfo, Rc<Vec<u8>>)>, best: &mut Best) -> Result<()> {
+    let (w, h) = (ctx.encoder.width as usize, ctx.encoder.height as usize);
+    for (info, payload) in frames {
+        // the other track may still hold the same frame
+        let mut data = Rc::try_unwrap(payload).unwrap_or_else(|rc| (*rc).clone());
+        if track.variant == Variant::Censored && best.as_ref().map(|(s, _, _)| info.score() > *s).unwrap_or(true) {
+            *best = Some((info.score(), info.t, data.clone()));
+        }
+        let text = ctx.overlay.is_some().then(|| caption(ctx, night, info.t, info.part));
+        if let (Some(o), Some(text)) = (ctx.overlay.as_mut(), text) {
+            o.draw(&mut data, w, h, &text);
+        }
+        if track.encoder.is_none() {
+            if track.variant == Variant::Uncensored {
+                create_private(&track.tmp)?;
+            }
+            track.encoder = Some(Encoder::spawn(&ctx.encoder, &track.tmp)?);
+        }
+        track.encoder.as_mut().unwrap().write_frame(&data)?;
+        track.rows.push(FrameRow {
+            idx: track.rows.len() as i64,
+            ts: info.t,
+            motion: info.motion,
+            private: info.private,
+            presence: info.presence.unwrap_or(-1.0),
+            interest: info.interest,
+        });
+    }
+    Ok(())
+}
+
+/// Creates (or truncates) a file only its owner and group can read; ffmpeg
+/// then writes into it keeping the mode.
+pub fn create_private(path: &Path) -> Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o640)
+        .open(path)
+        .with_context(|| format!("cannot create {}", path.display()))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640))?;
+    Ok(())
+}
+
+/// `outputs`: the timelapse versions to build with their manual redactions;
+/// the first one must be the censored timelapse (it provides the statistics).
+pub fn process(
+    ctx: &mut Ctx,
+    night: NaiveDate,
+    recs: &[Recording],
+    outputs: Vec<(Variant, Vec<(f64, f64)>)>,
+    segment_dir: &Path,
+) -> Result<NightOutput> {
     let cfg = ctx.cfg.clone();
     let spec = ctx.encoder.clone();
     let (w, h) = (spec.width as usize, spec.height as usize);
@@ -85,45 +156,33 @@ pub fn process(ctx: &mut Ctx, night: NaiveDate, recs: &[Recording], blocks: Vec<
         after: cfg.privacy.after_secs,
         nap_min: cfg.schedule.nap_min_minutes * 60.0,
         nap_gap: cfg.schedule.nap_gap_minutes * 60.0,
+        privacy: true,
     };
-    let mut selector: Selector<Vec<u8>> = Selector::new(sel_cfg, blocks);
+    anyhow::ensure!(outputs.first().map(|o| o.0) == Some(Variant::Censored), "the censored timelapse comes first");
+    let mut tracks: Vec<Track> = outputs
+        .into_iter()
+        .map(|(variant, blocks)| {
+            let (sc, suffix) = match variant {
+                Variant::Censored => (sel_cfg.clone(), ""),
+                Variant::Uncensored => (sel_cfg.uncensored(), "-uncensored"),
+            };
+            Track {
+                variant,
+                selector: Selector::new(sc, blocks),
+                tmp: segment_dir.join(format!("{night}{suffix}.mp4.tmp")),
+                encoder: None,
+                rows: Vec::new(),
+            }
+        })
+        .collect();
     let pieces = plan(recs, &ctx.clock.plan(night));
     let total: f64 = pieces.iter().map(|p| p.length).sum();
-    let tmp = segment_dir.join(format!("{night}.mp4.tmp"));
-    let mut encoder: Option<Encoder> = None;
-    let mut rows: Vec<FrameRow> = Vec::new();
-    let mut best: Option<(f32, f64, Vec<u8>)> = None;
+    let mut best: Best = None;
     let mut stats = NightStats::default();
 
     let pb = ProgressBar::new(total.max(1.0) as u64);
     pb.set_style(ProgressStyle::with_template("  night {msg} [{bar:30}] {percent:>3}% {elapsed} eta {eta}").unwrap().progress_chars("=> "));
     pb.set_message(night.to_string());
-
-    let mut emit =
-        |ctx: &mut Ctx, frames: Vec<(FrameInfo, Vec<u8>)>, encoder: &mut Option<Encoder>, rows: &mut Vec<FrameRow>| -> Result<()> {
-            for (info, mut data) in frames {
-                if best.as_ref().map(|(s, _, _)| info.score() > *s).unwrap_or(true) {
-                    best = Some((info.score(), info.t, data.clone()));
-                }
-                let text = ctx.overlay.is_some().then(|| caption(ctx, night, info.t, info.part));
-                if let (Some(o), Some(text)) = (ctx.overlay.as_mut(), text) {
-                    o.draw(&mut data, w, h, &text);
-                }
-                if encoder.is_none() {
-                    *encoder = Some(Encoder::spawn(&spec, &tmp)?);
-                }
-                encoder.as_mut().unwrap().write_frame(&data)?;
-                rows.push(FrameRow {
-                    idx: rows.len() as i64,
-                    ts: info.t,
-                    motion: info.motion,
-                    private: info.private,
-                    presence: info.presence.unwrap_or(-1.0),
-                    interest: info.interest,
-                });
-            }
-            Ok(())
-        };
 
     let mut last_t = f64::NEG_INFINITY;
     let mut done = 0.0;
@@ -188,11 +247,14 @@ pub fn process(ctx: &mut Ctx, night: NaiveDate, recs: &[Recording], blocks: Vec<
                     continue; // overlapping recordings
                 }
                 last_t = t;
-                let yuv = Yuv::new(&frame, w, h);
-                let mut info = analyzer.analyze(t, &yuv)?;
+                let frame = Rc::new(frame);
+                let mut info = analyzer.analyze(t, &Yuv::new(&frame, w, h))?;
                 info.part = piece.part;
-                let out = selector.push(info, || frame.clone());
-                emit(ctx, out, &mut encoder, &mut rows)?;
+                // every output sees the same analysed frame; the picture is shared
+                for track in tracks.iter_mut() {
+                    let out = track.selector.push(info.clone(), || frame.clone());
+                    emit(ctx, night, track, out, &mut best)?;
+                }
                 if i.is_multiple_of(30) {
                     pb.set_position((done + i as f64 / afps) as u64);
                 }
@@ -214,18 +276,26 @@ pub fn process(ctx: &mut Ctx, night: NaiveDate, recs: &[Recording], blocks: Vec<
             done += piece.length;
             pb.set_position(done as u64);
         }
-        let out = selector.finish();
-        emit(ctx, out, &mut encoder, &mut rows)?;
+        for track in tracks.iter_mut() {
+            let out = track.selector.finish();
+            emit(ctx, night, track, out, &mut best)?;
+        }
         log::debug!("detector runs: nudity {}, scene {}", analyzer.nsfw_runs, analyzer.clip_runs);
         Ok(())
     })();
     ctx.models = models;
     pb.finish_and_clear();
-    result?;
+    if let Err(e) = result {
+        for t in tracks {
+            drop(t.encoder);
+            let _ = std::fs::remove_file(&t.tmp);
+        }
+        return Err(e);
+    }
 
-    let s = &selector.stats;
+    let s = &tracks[0].selector.stats;
     stats.analyzed = s.analyzed as i64;
-    stats.emitted = rows.len() as i64;
+    stats.emitted = tracks[0].rows.len() as i64;
     stats.skipped_private = (s.private + s.dropped_private) as i64;
     stats.skipped_idle = s.idle as i64;
     stats.skipped_dark = s.dark as i64;
@@ -243,17 +313,23 @@ pub fn process(ctx: &mut Ctx, night: NaiveDate, recs: &[Recording], blocks: Vec<
             }
         }
     }
-    let segment = match encoder {
-        Some(enc) => {
-            enc.finish().context("encoding the night's segment failed")?;
-            // unique name: the previous version of a reprocessed night stays valid until the index is updated
-            let final_path = segment_dir.join(format!("{night}-{}.mp4", crate::timeutil::now_ts()));
-            std::fs::rename(&tmp, &final_path)?;
-            Some((final_path, rows))
-        }
-        None => None,
-    };
-    Ok(NightOutput { segment, stats })
+    // unique names: the previous version of a reprocessed night stays valid until the index is updated
+    let stamp = crate::timeutil::now_ts();
+    let mut segments = Vec::new();
+    for t in tracks {
+        let segment = match t.encoder {
+            Some(enc) => {
+                enc.finish().with_context(|| format!("encoding the night's {} segment failed", t.variant.key()))?;
+                let suffix = if t.variant == Variant::Uncensored { "-uncensored" } else { "" };
+                let final_path = segment_dir.join(format!("{night}-{stamp}{suffix}.mp4"));
+                std::fs::rename(&t.tmp, &final_path)?;
+                Some((final_path, t.rows))
+            }
+            None => None,
+        };
+        segments.push((t.variant, segment));
+    }
+    Ok(NightOutput { segments, stats })
 }
 
 #[cfg(test)]

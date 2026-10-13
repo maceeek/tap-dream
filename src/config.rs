@@ -1,6 +1,7 @@
 //! Configuration (TOML). Every field has a sensible default except the camera
 //! address and the TP-Link cloud password.
 
+use crate::db::Variant;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -144,6 +145,12 @@ pub struct Timelapse {
     pub idle_interval_secs: f64,
     /// Save the most interesting frame of every night as JPEG into data_dir/highlights.
     pub highlights: bool,
+    /// Also build a second timelapse next to the regular one in which the
+    /// privacy filter is off (everything else – frame selection, speed,
+    /// captions – is the same).
+    pub uncensored: bool,
+    /// The uncensored timelapse (relative paths are inside data_dir).
+    pub uncensored_output: PathBuf,
 }
 
 impl Default for Timelapse {
@@ -161,6 +168,8 @@ impl Default for Timelapse {
             calm_interval_secs: 90.0,
             idle_interval_secs: 900.0,
             highlights: true,
+            uncensored: false,
+            uncensored_output: PathBuf::from("timelapse-uncensored.mp4"),
         }
     }
 }
@@ -386,6 +395,8 @@ impl Config {
         if cfg.general.data_dir.is_relative() {
             cfg.general.data_dir = base.join(&cfg.general.data_dir);
         }
+        // Absolute, so the paths stored in the index don't depend on the working directory.
+        cfg.general.data_dir = std::path::absolute(&cfg.general.data_dir)?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -410,6 +421,9 @@ impl Config {
             "hevc" | "h264" => {}
             other => bail!("timelapse.codec must be hevc or h264, not {other:?}"),
         }
+        if self.timelapse.uncensored && self.data_path(&self.timelapse.uncensored_output) == self.data_path(&self.timelapse.output) {
+            bail!("timelapse.uncensored_output must differ from timelapse.output");
+        }
         Ok(())
     }
 
@@ -421,8 +435,20 @@ impl Config {
         }
     }
 
-    pub fn output_path(&self) -> PathBuf {
-        self.data_path(&self.timelapse.output)
+    pub fn output_path(&self, variant: Variant) -> PathBuf {
+        match variant {
+            Variant::Censored => self.data_path(&self.timelapse.output),
+            Variant::Uncensored => self.data_path(&self.timelapse.uncensored_output),
+        }
+    }
+
+    /// The timelapse versions that are being built.
+    pub fn variants(&self) -> Vec<Variant> {
+        let mut v = vec![Variant::Censored];
+        if self.timelapse.uncensored {
+            v.push(Variant::Uncensored);
+        }
+        v
     }
 
     /// Model paths are resolved against data_dir.
@@ -474,6 +500,17 @@ mod tests {
         cfg.validate().unwrap();
         assert_eq!(cfg.camera.media_port, 8800);
         assert!(cfg.schedule.naps);
+        assert_eq!(cfg.variants(), vec![Variant::Censored]);
+    }
+
+    #[test]
+    fn uncensored_needs_its_own_file() {
+        let cfg: Config = toml::from_str("[timelapse]\nuncensored = true\n").unwrap();
+        cfg.validate().unwrap();
+        assert_eq!(cfg.variants(), vec![Variant::Censored, Variant::Uncensored]);
+        assert_ne!(cfg.output_path(Variant::Censored), cfg.output_path(Variant::Uncensored));
+        let bad: Config = toml::from_str("[timelapse]\nuncensored = true\nuncensored_output = \"timelapse.mp4\"\n").unwrap();
+        assert!(bad.validate().is_err());
     }
 
     #[test]

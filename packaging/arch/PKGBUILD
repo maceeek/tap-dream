@@ -13,8 +13,9 @@ url="https://github.com/maceeek/tap-dream"
 license=('MIT')
 depends=('ffmpeg' 'openssl' 'gcc-libs' 'glibc' 'curl' 'ttf-dejavu')
 makedepends=('cargo' 'git')
-optdepends=('onnxruntime-cuda: AI models on an NVIDIA GPU (recommended)'
-            'onnxruntime: AI models on the CPU'
+optdepends=('onnxruntime-cuda: AI models on an NVIDIA GPU, Turing (GTX 16xx/RTX 20xx) or newer'
+            'onnxruntime-opt-cuda: the same with AVX2 CPU optimizations'
+            'onnxruntime-cpu: AI models on the CPU (older GPUs, no NVIDIA GPU)'
             'nvidia-utils: NVDEC decoding and NVENC encoding on an NVIDIA GPU')
 provides=('tapdream')
 conflicts=('tapdream')

@@ -129,7 +129,10 @@ pub fn runtime(cfg: &Gpu, data_dir: &Path) -> Result<&'static Runtime> {
 
 fn init(cfg: &Gpu, data_dir: &Path) -> Result<Runtime> {
     let lib = find_library(cfg, data_dir).ok_or_else(|| {
-        anyhow!("ONNX Runtime not found. Install it (e.g. `pip install onnxruntime-gpu`) or set gpu.onnxruntime_lib / ORT_DYLIB_PATH")
+        anyhow!(
+            "ONNX Runtime not found. Install it (Arch/CachyOS: `pacman -S onnxruntime-cuda` or `onnxruntime-cpu`, \
+             elsewhere `pip install onnxruntime-gpu`) or set gpu.onnxruntime_lib / ORT_DYLIB_PATH"
+        )
     })?;
     let wants_gpu = matches!(cfg.provider.as_str(), "auto" | "cuda" | "tensorrt");
     if wants_gpu {

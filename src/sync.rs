@@ -135,6 +135,24 @@ pub fn download_pending(
     Ok(())
 }
 
+/// Downloads recordings again, e.g. to process a day once more after its
+/// files were deleted. Stops at the first one the camera cannot deliver.
+pub fn redownload(cfg: &Config, db: &Db, clock: &NightClock, tapo: &mut Tapo, recs: &[Recording], stop: &AtomicBool) -> Result<()> {
+    let dir = recordings_dir(cfg);
+    fs::create_dir_all(&dir)?;
+    let user_id = tapo.user_id()?;
+    for rec in recs {
+        if stop.load(Ordering::Relaxed) {
+            bail!("interrupted");
+        }
+        let (path, bytes, seconds) = download_one(cfg, tapo, &user_id, rec, &dir, &clock.zone).with_context(|| {
+            format!("cannot download the recording from {} again (no longer on the SD card?)", fmt_ts(&clock.zone, rec.start_ts))
+        })?;
+        db.mark_downloaded(rec.id, &path.to_string_lossy(), bytes, seconds, now_ts())?;
+    }
+    Ok(())
+}
+
 fn download_one(
     cfg: &Config,
     tapo: &Tapo,

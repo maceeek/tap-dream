@@ -8,6 +8,8 @@ Type=oneshot
 User=tapdream
 Group=tapdream
 WorkingDirectory=/var/lib/tapdream
+# nothing tapdream writes is readable for other users
+UMask=0027
 Environment=TAPDREAM_CONFIG=/etc/tapdream/config.toml
 EnvironmentFile=-/etc/tapdream/env
 ExecStart=/usr/local/bin/tapdream run

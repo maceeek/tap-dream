@@ -10,6 +10,8 @@ Cílem je video, ve kterém je vidět, jak miminko roste a kolik nocí jste spol
   (v záběru někdo je a vydrží tam). Krátké průchody místností a prázdnou postýlku přeskočí.
 - **Soukromí na prvním místě.** Snímky s nahotou (typicky kojení) se automaticky vyřazují i s časovou rezervou
   kolem nich. Vše běží lokálně na vašem GPU, žádný obraz neopouští počítač.
+- **Volitelně i necenzurovaná verze.** Vedle sdílitelného videa může paralelně vznikat druhé, kde se nahota
+  neřeší. Je jen pro vás, viz [necenzurovaná verze](#necenzurovaná-verze).
 - **Inteligentní tempo.** Když se něco děje, video běží pomaleji, klidný spánek se zrychlí a prázdné scény se vynechají.
 - **„Zajímavost“ snímků.** Model CLIP vybírá v každém časovém okně nejzajímavější a nejostřejší snímek a ukládá
   „fotku dne“.
@@ -30,6 +32,7 @@ Cílem je video, ve kterém je vidět, jak miminko roste a kolik nocí jste spol
                          zajímavost)                     • nejlepší snímek v okně  │
                                                          • okno soukromí           ▼
                                                      timelapse.mp4 ◄── připojení na konec (append)
+                                          (volitelně) timelapse-uncensored.mp4 ◄── totéž bez filtru nahoty
 ```
 
 > **Stav ověření.** Protokol kamery je přenesen z [pytapo](https://github.com/JurajNyiri/pytapo) (verze 3.4.26)
@@ -41,60 +44,117 @@ Cílem je video, ve kterém je vidět, jak miminko roste a kolik nocí jste spol
 
 ## Obsah
 
-1. [Instalace (Arch Linux)](#instalace-arch-linux)
+1. [Instalace (Arch Linux, CachyOS)](#instalace-arch-linux-cachyos)
 2. [První spuštění](#první-spuštění)
 3. [Automatický běh (systemd)](#automatický-běh-systemd)
 4. [Jak to funguje: den = noc + šlofíky](#jak-to-funguje-den--noc--šlofíky)
 5. [Soukromí: vyřazování nahoty](#soukromí-vyřazování-nahoty)
-6. [„Zajímavost“ snímků](#zajímavost-snímků)
-7. [Jeden stále stejný soubor](#jeden-stále-stejný-soubor)
-8. [Příkazy](#příkazy)
-9. [Konfigurace – co ladit](#konfigurace--co-ladit)
-10. [Výkon](#výkon)
-11. [Řešení problémů](#řešení-problémů)
-12. [Jiné distribuce](#jiné-distribuce)
-13. [Vývoj a testy](#vývoj-a-testy)
-14. [Licence a poděkování](#licence-a-poděkování)
+6. [Necenzurovaná verze](#necenzurovaná-verze)
+7. [„Zajímavost“ snímků](#zajímavost-snímků)
+8. [Jeden stále stejný soubor](#jeden-stále-stejný-soubor)
+9. [Příkazy](#příkazy)
+10. [Konfigurace – co ladit](#konfigurace--co-ladit)
+11. [Výkon](#výkon)
+12. [Řešení problémů](#řešení-problémů)
+13. [Jiné distribuce](#jiné-distribuce)
+14. [Vývoj a testy](#vývoj-a-testy)
+15. [Licence a poděkování](#licence-a-poděkování)
 
 ---
 
-## Instalace (Arch Linux)
+## Instalace (Arch Linux, CachyOS)
+
+Potřebujete tři věci: ovladač NVIDIA, `ffmpeg` a ONNX Runtime (běh AI modelů). S kartou GTX 16xx/RTX 20xx
+a novější je vše v oficiálních repozitářích, nic z AUR není potřeba. CachyOS používá stejné balíčky jako Arch
+(část z nich jen přestavěnou pro novější procesory), takže postup je až na ovladač stejný.
+
+> Stav balíčků k říjnu 2026. Názvy a verze si můžete ověřit přes `pacman -Si <balíček>`.
 
 ### 1. Ovladač NVIDIA
 
-Podle [Arch Wiki – NVIDIA](https://wiki.archlinux.org/title/NVIDIA), typicky:
+Která karta potřebuje který ovladač:
+
+| karta | Arch | CachyOS |
+|---|---|---|
+| GTX 16xx, RTX 20xx a novější (Turing+) | `nvidia-open` + `nvidia-utils` (`nvidia-open-dkms` pro vlastní jádra, `nvidia-lts-open` pro `linux-lts`) | `sudo chwd -a` |
+| GTX 9xx/10xx (Maxwell, Pascal) | AUR `nvidia-580xx-dkms` (ovladač 590 je už nepodporuje) | `sudo chwd -a` (vybere 580xx) |
+
+**Arch:**
 
 ```bash
-sudo pacman -S nvidia-open nvidia-utils      # pro starší karty viz wiki
+sudo pacman -S nvidia-open nvidia-utils
+sudo reboot
 nvidia-smi                                   # ověření
 ```
 
-`nvidia-utils` obsahuje knihovny pro NVDEC/NVENC. Archový `ffmpeg` je s podporou NVENC/NVDEC sestavený.
+Od ovladače 590 (prosinec 2025) jsou hlavní balíčky `nvidia-open*` a starší `nvidia`/`nvidia-dkms`
+nahradily. Viz [oznámení Archu](https://archlinux.org/news/nvidia-590-driver-drops-pascal-support-main-packages-switch-to-open-kernel-modules/)
+a [Arch Wiki – NVIDIA](https://wiki.archlinux.org/title/NVIDIA).
 
-### 2. ONNX Runtime (běh AI modelů)
-
-AI modely běží přes ONNX Runtime, který `tapdream` načítá dynamicky a sám ho najde v `/usr/lib`:
-
-```bash
-pacman -Ss onnxruntime                # ověřte aktuální názvy balíčků v repozitáři extra
-sudo pacman -S onnxruntime-cuda       # GPU (stáhne i cuda + cudnn, několik GB)
-# nebo jen CPU:  sudo pacman -S onnxruntime
-```
-
-Kdyby balíček v repozitáři chyběl nebo jeho verze CUDA neseděla k ovladači, funguje i instalace z pipu do
-virtuálního prostředí. `tapdream` ji najde sám a sám načte i knihovny CUDA/cuDNN z pip balíčků:
+**CachyOS:** ovladač obvykle nainstaluje už instalátor. Jinak ho nainstaluje nástroj `chwd`, který vybere moduly
+přesně k jádru `linux-cachyos` (např. `linux-cachyos-nvidia-open`) a k nim `nvidia-utils`:
 
 ```bash
-python -m venv ~/.tapdream-venv
-~/.tapdream-venv/bin/pip install "onnxruntime-gpu[cuda,cudnn]"     # CUDA 13 (ovladač ≥ 580)
+sudo chwd -a                 # automatická konfigurace
+chwd --list-installed        # co je nainstalované
+nvidia-smi
 ```
 
-Jinou instalaci lze zadat přes `gpu.onnxruntime_lib` v konfiguraci nebo proměnnou `ORT_DYLIB_PATH`.
-Bez GPU vše funguje na CPU, jen pomaleji.
+Nekombinujte předpřipravené moduly (`linux-cachyos-…-nvidia-open`) s `nvidia-open-dkms`, kolidují spolu.
 
-### 3. tapdream jako balíček (doporučeno)
+### 2. ffmpeg (NVDEC/NVENC)
 
-V repozitáři je `PKGBUILD`, který sestaví právě naklonovanou verzi (jen commitnuté změny):
+```bash
+sudo pacman -S ffmpeg
+ffmpeg -hide_banner -encoders | grep nvenc    # hevc_nvenc, h264_nvenc
+```
+
+Archový `ffmpeg` je sestavený s NVENC/NVDEC a knihovny pro ně (`libnvidia-encode`, `libnvcuvid`) přidá
+`nvidia-utils`. CUDA toolkit pro video potřeba není. CachyOS má vlastní, pro procesor optimalizované sestavení
+v `cachyos-extra-v3`/`-v4`/`-znver4` ze stejného PKGBUILD. Kdyby v něm NVENC chybělo, `tapdream doctor` to ukáže
+a `tapdream` použije CPU (libx265).
+
+### 3. ONNX Runtime (AI modely)
+
+Arch rozdělil ONNX Runtime na varianty. Všechny instalují `/usr/lib/libonnxruntime.so` a GPU varianty také
+`/usr/lib/libonnxruntime_providers_cuda.so`. `tapdream` si je najde sám. CachyOS je bere z Archového
+repozitáře `extra` beze změny.
+
+| situace | balíček |
+|---|---|
+| GTX 16xx, RTX 20xx a novější | `onnxruntime-cuda`, nebo `onnxruntime-opt-cuda` (navíc optimalizace pro AVX2) |
+| GTX 9xx/10xx | `onnxruntime-cpu`, nebo pip varianta níže |
+| bez karty NVIDIA | `onnxruntime-cpu` |
+
+```bash
+sudo pacman -S onnxruntime-cuda
+```
+
+- **Místo na disku:** `onnxruntime-cuda` stáhne i `cuda`, `cudnn` a `nccl`, celkem zhruba **6–7 GB**
+  (samotná `cuda` má asi 5 GB).
+- **Starší karty:** Archová `cuda` je verze 13, která už nepodporuje Maxwell, Pascal ani Voltu. Na GTX 10xx
+  proto CUDA varianta nepoběží (`tapdream` pak sám přejde na CPU). Na CPU to s modelem `nudenet-320n` a CLIP
+  stihne asi 40× rychleji než reálný čas, na noční zpracování to stačí.
+- **Starý balíček `onnxruntime`:** byl rozdělen na tyto varianty. Pokud ho máte, pacman nabídne náhradu.
+- **TensorRT:** v oficiálních balíčcích není a potřeba není. Pro tyto malé modely stačí CUDA.
+
+**Varianta přes pip** se hodí, když nechcete systémovou CUDA (6–7 GB), nebo pro GTX 10xx. Knihovny CUDA/cuDNN
+přijdou z pip balíčků (~1 GB). Virtuální prostředí vytvořte v domovském adresáři uživatele `tapdream`.
+Tam ho `tapdream` najde sám a načte z něj i CUDA/cuDNN:
+
+```bash
+sudo -u tapdream python -m venv /var/lib/tapdream/.tapdream-venv
+sudo -u tapdream /var/lib/tapdream/.tapdream-venv/bin/pip install "onnxruntime-gpu[cuda,cudnn]"     # CUDA 13
+# GTX 9xx/10xx s ovladačem 580xx: poslední sestavení pro CUDA 12
+#   … pip install "onnxruntime-gpu[cuda,cudnn]==1.26.*"
+```
+
+Jinou instalaci lze zadat přes `gpu.onnxruntime_lib` nebo proměnnou `ORT_DYLIB_PATH`.
+
+### 4. tapdream jako balíček (doporučeno)
+
+V repozitáři je `PKGBUILD`, který sestaví právě naklonovanou verzi (jen commitnuté změny). Rust stačí
+z repozitáře (`rust`, verze ≥ 1.89). Kdo už má `rustup`, balíček `rust` neinstaluje:
 
 ```bash
 sudo pacman -S --needed base-devel git rust
@@ -115,7 +175,7 @@ Balíček nainstaluje:
 Systémový uživatel `tapdream` vznikne přes `sysusers.d` a datový adresář přes `tmpfiles.d`.
 Aktualizace: `git pull && makepkg -si`.
 
-### 3b. Bez balíčku
+### 4b. Bez balíčku
 
 ```bash
 sudo pacman -S --needed base-devel rust ffmpeg openssl curl ttf-dejavu
@@ -123,19 +183,19 @@ cargo build --release
 sudo install -Dm755 target/release/tapdream /usr/local/bin/tapdream
 ```
 
-### 4. Pomocný alias
+### 5. Pomocný alias
 
 Ruční příkazy je nejlepší pouštět stejně jako službu, tedy jako uživatel `tapdream` se stejnou konfigurací
 a heslem. Do `~/.bashrc` (nebo `~/.zshrc`):
 
 ```bash
-alias td='sudo systemd-run --pty --wait --collect --quiet -p User=tapdream -p WorkingDirectory=/var/lib/tapdream \
-  -p EnvironmentFile=-/etc/tapdream/env /usr/bin/tapdream -c /etc/tapdream/config.toml'
+alias td='sudo systemd-run --pty --wait --collect --quiet -p User=tapdream -p UMask=0027 \
+  -p WorkingDirectory=/var/lib/tapdream -p EnvironmentFile=-/etc/tapdream/env /usr/bin/tapdream -c /etc/tapdream/config.toml'
 ```
 
 Bez balíčku stačí `tapdream` s vlastním `config.toml` (`tapdream init`).
 
-### 5. Modely
+### 6. Modely
 
 ```bash
 td models fetch
@@ -196,8 +256,8 @@ Bez balíčku zkopírujte jednotky z `deploy/` do `/etc/systemd/system/`, vytvo�
 (`sudo systemd-sysusers packaging/arch/tapdream.sysusers`) a adresáře
 (`sudo systemd-tmpfiles --create packaging/arch/tapdream.tmpfiles`).
 
-Pokud ONNX Runtime instalujete přes pip, udělejte to do `/var/lib/tapdream/.tapdream-venv`
-(`sudo -u tapdream python -m venv …`), nebo cestu zadejte v `gpu.onnxruntime_lib`.
+Data v `/var/lib/tapdream` čte jen uživatel a skupina `tapdream`. K hotovému videu se dostanete třeba
+`sudo cp /var/lib/tapdream/timelapse.mp4 ~/`, nebo se přidejte do skupiny: `sudo usermod -aG tapdream $USER`.
 
 ---
 
@@ -240,9 +300,9 @@ od `birth_date`), šlofík `Šlofík · 11. 10. 2026 · 3 měsíce 10 dní` (`ov
 |---|---|
 | `recordings` | každý záznam na kameře: časy, stav (`new` → `downloaded` → `purged`, `skipped`, `failed`), počet pokusů |
 | `nights` | zpracované dny + statistiky (snímky ze šlofíků, minuty vyřazené kvůli soukromí, prázdné scéně, tmě, krátké návštěvy) |
-| `segments` / `frames` | segment každého dne a ke každému snímku jeho čas a skóre |
-| `master` / `master_fragments` | přesný stav výsledného souboru (konec dat, délka, index pro převíjení) |
-| `redactions` | ručně vyřazené časové úseky |
+| `segments` / `frames` | segment každého dne (u necenzurované verze dva) a ke každému snímku jeho čas a skóre |
+| `masters` / `master_index` | přesný stav výsledných souborů (konec dat, délka, index pro převíjení), zvlášť pro běžnou a necenzurovanou verzi |
+| `redactions` | ručně vyřazené časové úseky (a zda platí i pro necenzurovanou verzi) |
 
 Díky tomu se nic nestahuje ani nezpracovává dvakrát. Záznamy, které žádný den nepotřebuje, se vůbec
 nestahují. Po zpracování dne se stažené soubory smažou (`schedule.keep_downloads`).
@@ -305,6 +365,36 @@ tapdream inspect snimek.jpg
 
 ---
 
+## Necenzurovaná verze
+
+Volitelně může vedle běžného videa vznikat druhé, ve kterém se nahota vůbec neřeší:
+
+```toml
+[timelapse]
+uncensored = true
+uncensored_output = "timelapse-uncensored.mp4"   # v data_dir
+```
+
+- **Stejný výběr, jen bez filtru nahoty.** Tempo, vynechané prázdné scény, šlofíky, nejlepší snímek v okně i
+  titulky jsou stejné. Kde žádná detekce nebyla, jsou obě videa snímek po snímku totožná. Liší se jen tím, že
+  necenzurovaná verze obsahuje i úseky kolem kojení.
+- **Prakticky zadarmo.** Záznamy se dekódují a analyzují jen jednou. Navíc běží jen druhý enkodér (NVENC zvládne
+  několik souběžných relací) a připojování k druhému souboru.
+- **Detekce dál běží.** Běžné video zůstává cenzurované a `privacy.required` platí dál.
+- **Ruční redakce** (`tapdream redact`) jsou opravou filtru nahoty, proto se týkají jen běžného videa. Úsek, který
+  nechcete ani v necenzurované verzi, odstraníte přes `tapdream redact … --also-uncensored`.
+- **Soukromí souboru:** necenzurovaná videa a jejich segmenty mají práva `0640` (vlastník a skupina `tapdream`).
+  Fotka dne se bere jen z cenzurované verze. Necenzurovanou verzi nedávejte do sdílených knihoven
+  (Jellyfin/Plex pro celou rodinu) ani do cloudových fotek.
+- **Kopie:** `tapdream export --uncensored kopie.mp4`.
+
+**Zapnutí později:** necenzurovaná verze začne dnem, který se zpracuje jako další. Starší dny doplní
+`tapdream reprocess <od> --to <do>`: záznamy, které jsou ještě na SD kartě, se znovu stáhnou a dny se zpracují
+znovu (obě verze). Přesný příkaz vypíše `tapdream status`. Dny, které už kamera přemazala, zůstanou jen
+v běžném videu. **Vypnutí:** soubor zůstane, jen se dál neprodlužuje.
+
+---
+
 ## „Zajímavost“ snímků
 
 Prakticky to funguje přes **CLIP**, model, který umí porovnat obrázek s textovým popisem (zero-shot).
@@ -363,10 +453,10 @@ do posledního platného stavu.
 | `tapdream daemon` | `run` každých `daemon_interval_secs` |
 | `tapdream status` / `nights` | přehled, statistiky po dnech (včetně šlofíků) |
 | `tapdream inspect <soubor> [--at s]` | co modely vidí na snímku (ladění prahů) |
-| `tapdream redact --from … --to …` | vyřadí časový úsek z videa |
-| `tapdream reprocess <YYYY-MM-DD>` | znovu zpracuje den (vyžaduje `keep_downloads = true`) |
-| `tapdream rebuild [--reencode]` | znovu sestaví video ze segmentů |
-| `tapdream export <soubor>` | klasická MP4 kopie |
+| `tapdream redact --from … --to … [--also-uncensored]` | vyřadí časový úsek z videa (s přepínačem i z necenzurované verze) |
+| `tapdream reprocess <YYYY-MM-DD> [--to <YYYY-MM-DD>]` | znovu zpracuje den nebo rozsah dnů. Smazané záznamy znovu stáhne z SD karty. Dokud nový výsledek nevznikne, zůstává ve videu původní verze dne. |
+| `tapdream rebuild [--reencode]` | znovu sestaví video (obě verze) ze segmentů |
+| `tapdream export [--uncensored] <soubor>` | klasická MP4 kopie |
 
 Globální volby: `-c/--config <soubor>` (nebo `TAPDREAM_CONFIG`), `-v` (ladicí výpisy, mimo jiné průběh šlofíků).
 Ctrl+C dokončí rozpracovaný krok a skončí. Druhé Ctrl+C ukončí program okamžitě.
@@ -384,6 +474,7 @@ Kompletní a komentovaná je v [`config.example.toml`](config.example.toml). Nej
 | `schedule.naps` / `nap_hours` | `true` / `""` | šlofíky mimo noční okno, volitelně jen v daných oknech |
 | `schedule.nap_min_minutes` / `nap_gap_minutes` | 10 / 5 | minimální délka šlofíku, přerušení, které ho ukončí |
 | `timelapse.crop` | `""` | ořez zdroje `w:h:x:y`, např. jen na postýlku. Miminko pak vyplní celý obraz. |
+| `timelapse.uncensored` | `false` | paralelně i [necenzurovaná verze](#necenzurovaná-verze) (`uncensored_output`) |
 | `timelapse.interval_secs` / `calm_interval_secs` / `idle_interval_secs` | 20 / 90 / 900 | tempo videa |
 | `timelapse.fps`, `width`, `height`, `codec`, `quality` | 30, 1920×1080, hevc, 24 | formát (zamkne se) |
 | `analysis.decode` | `auto` | `keyframes` = dekódovat jen klíčové snímky (nejrychlejší); `auto` to zvolí sám podle záznamu |
@@ -424,12 +515,13 @@ tedy asi 47× rychleji než reálný čas. Většinu času zabírají modely, ta
 | `camera temporarily blocks logins` | počkejte uvedený počet sekund |
 | `media server rejected the cloud password` | totéž heslo slouží i pro stahování (port 8800) |
 | `media encryption is turned off` | v aplikaci Tapo zapněte šifrování médií (výchozí stav) |
-| `ONNX Runtime not found` | `sudo pacman -S onnxruntime-cuda` nebo pip venv, případně `gpu.onnxruntime_lib` |
-| `GPU inference unavailable … using the CPU` | chybí CUDA/cuDNN nebo nesedí verze k ovladači: `nvidia-smi`, `pacman -Qi cuda cudnn`, případně varianta přes pip |
-| `GPU decoding failed … retrying on the CPU` | chybí `nvidia-utils` (libnvcuvid) nebo běží jiná verze ovladače než jádro, pomůže restart po aktualizaci |
+| `ONNX Runtime not found` | `sudo pacman -S onnxruntime-cuda` (nebo `onnxruntime-cpu`), případně pip venv a `gpu.onnxruntime_lib` |
+| `GPU inference unavailable … using the CPU` | GTX 9xx/10xx s Archovou CUDA 13 neběží (viz [ONNX Runtime](#3-onnx-runtime-ai-modely)). Jinak nesedí verze ovladače: `nvidia-smi`, `pacman -Qi cuda cudnn nvidia-utils`, po aktualizaci ovladače restart. |
+| `GPU decoding failed … retrying on the CPU` | chybí `nvidia-utils` (libnvcuvid) nebo běží jiná verze ovladače než jádro, pomůže restart po aktualizaci. Na CachyOS zkontrolujte `chwd --list-installed`. |
 | den se nezpracovává | `tapdream status`: čeká se na stažení všech záznamů dne a na konec dne + `grace_minutes` |
 | šlofík chybí | `tapdream -v reprocess <den>` vypíše nalezené přítomnosti v záběru a proč byly krátké. Zkuste nižší `nap_min_minutes`, nebo `inspect` (presence). |
 | ve videu je něco, co tam nemá být | `tapdream redact …`, pak zvažte nižší `privacy.threshold` |
+| `reprocess`: `cannot download the recording … again` | kamera už záznam přemazala. Den zůstane v původní podobě. |
 | hub H200 / bateriové kamery (KLAP) | zatím nepodporováno |
 
 Podrobné výpisy: `tapdream -v …`, u služby `journalctl -u tapdream`.
@@ -438,7 +530,8 @@ Podrobné výpisy: `tapdream -v …`, u služby `journalctl -u tapdream`.
 
 ## Jiné distribuce
 
-Funguje na každém Linuxu s ffmpeg (s NVENC/NVDEC pro GPU), OpenSSL a ONNX Runtime. Například na Debianu/Ubuntu:
+Funguje na každém Linuxu s ffmpeg (s NVENC/NVDEC pro GPU), OpenSSL a ONNX Runtime. Manjaro, EndeavourOS a další
+odvozeniny Archu postupují stejně jako Arch. Například na Debianu/Ubuntu:
 `sudo apt install ffmpeg curl build-essential pkg-config libssl-dev python3-venv fonts-dejavu-core`, ONNX Runtime
 přes pip venv (viz výše), sestavení `cargo build --release` a systemd jednotky z `deploy/`.
 

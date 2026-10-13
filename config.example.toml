@@ -44,6 +44,10 @@ interval_secs = 20                # 1 snímek výstupu za 20 s reálného času,
 calm_interval_secs = 90           # ... když je klid (spánek)
 idle_interval_secs = 900          # ... když je scéna prázdná/statická; 0 = úplně vynechat
 highlights = true                 # nejzajímavější snímek každé noci jako JPEG
+# Druhé, necenzurované video: vzniká paralelně ze stejných snímků, jen bez filtru nahoty.
+# Je jen pro vás – nesdílejte ho a nedávejte do cloudu (soubor dostane práva 0640).
+uncensored = false
+uncensored_output = "timelapse-uncensored.mp4"
 
 [analysis]
 fps = 1.0                         # kolik snímků za sekundu záznamu se analyzuje

@@ -13,6 +13,8 @@
 //!   detection are dropped too – nothing private ever reaches the encoder.
 //!   Context frames (just outside the used footage) are only checked for
 //!   privacy, so the window works across the edges as well.
+//! * The uncensored timelapse runs a second selector with `privacy` off: it
+//!   sees the same frames and makes the same choices, it just never blocks.
 
 pub use crate::timeutil::Part;
 use std::collections::VecDeque;
@@ -38,6 +40,15 @@ pub struct SelectorConfig {
     pub nap_min: f64,
     /// A nap ends after this long without anybody in the picture (seconds).
     pub nap_gap: f64,
+    /// false = ignore the privacy scores (uncensored timelapse).
+    pub privacy: bool,
+}
+
+impl SelectorConfig {
+    /// The same selection without the privacy filter (no look-back delay either).
+    pub fn uncensored(&self) -> Self {
+        Self { privacy: false, before: 0.0, after: 0.0, ..self.clone() }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -181,8 +192,9 @@ impl<P> Selector<P> {
     /// Returns frames that are final and can be encoded.
     pub fn push(&mut self, info: FrameInfo, payload: impl FnOnce() -> P) -> Vec<(FrameInfo, P)> {
         let t = info.t;
+        let private = self.cfg.privacy && info.private >= 1.0;
         if info.part == Part::Context {
-            if info.private >= 1.0 {
+            if private {
                 self.block(t);
             }
             return self.release(t);
@@ -213,7 +225,7 @@ impl<P> Selector<P> {
             self.last_change = t;
         }
 
-        if info.private >= 1.0 {
+        if private {
             self.stats.private += 1;
             self.block(t);
             return self.release(t);
@@ -355,6 +367,7 @@ mod tests {
             after: 60.0,
             nap_min: 300.0,
             nap_gap: 60.0,
+            privacy: true,
         }
     }
 
@@ -409,6 +422,36 @@ mod tests {
         let mut s = Selector::new(cfg(), vec![(100.0, 200.0)]);
         let out = run(&mut s, (0..400).map(|i| frame(i as f64, 0.05)).collect());
         assert!(out.iter().all(|&t| !(100.0..=200.0).contains(&t)));
+    }
+
+    #[test]
+    fn uncensored_selection_ignores_privacy_only() {
+        let frames = || {
+            let mut f: Vec<_> = (0..900).map(|i| frame(i as f64, if i < 450 { 0.05 } else { 0.0 })).collect();
+            for x in &mut f[300..360] {
+                x.private = 2.0;
+            }
+            for x in &mut f[600..700] {
+                x.presence = Some(0.05); // empty room is still skipped
+            }
+            f[800].dark = true;
+            f
+        };
+        let mut censored = Selector::new(cfg(), vec![(820.0, 840.0)]);
+        let a = run(&mut censored, frames());
+        let mut raw = Selector::new(cfg().uncensored(), vec![]);
+        let b = run(&mut raw, frames());
+        assert!(a.iter().all(|&t| !(270.0..420.0).contains(&t)), "{a:?}"); // [300-30, 359+60]
+        assert!(b.iter().any(|&t| (300.0..360.0).contains(&t)), "{b:?}");
+        assert!(b.iter().all(|&t| !(600.0..700.0).contains(&t)));
+        assert_eq!(raw.stats.private, 0);
+        assert_eq!(raw.stats.idle, censored.stats.idle);
+        // up to the first detection both make exactly the same choices
+        let early = |v: &[f64]| v.iter().copied().filter(|&t| t < 270.0).collect::<Vec<_>>();
+        assert_eq!(early(&a), early(&b));
+        let late = |v: &[f64]| v.iter().filter(|&&t| t > 460.0 && !(820.0..=840.0).contains(&t)).count() as i64;
+        assert!((late(&a) - late(&b)).abs() <= 1, "{a:?} {b:?}");
+        assert!(b.iter().any(|&t| (820.0..=840.0).contains(&t)), "manual redactions apply only where given");
     }
 
     fn nap(t: f64, presence: f32) -> FrameInfo {

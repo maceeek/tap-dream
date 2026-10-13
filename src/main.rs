@@ -13,7 +13,7 @@ mod vision;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use config::Config;
-use db::{Db, RecStatus};
+use db::{Db, RecStatus, Variant};
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -75,11 +75,26 @@ enum Cmd {
         from: String,
         #[arg(long)]
         to: String,
+        /// Remove it from the uncensored timelapse too
+        #[arg(long)]
+        also_uncensored: bool,
     },
-    /// Process a night again (needs schedule.keep_downloads = true)
-    Reprocess { night: String },
+    /// Process a day (or a range of days) again; deleted recordings are
+    /// downloaded again if they are still on the camera's SD card
+    Reprocess {
+        /// First day, YYYY-MM-DD
+        night: String,
+        /// Last day (default: just the first one)
+        #[arg(long)]
+        to: Option<String>,
+    },
     /// Write a regular (fast-start) MP4 copy of the timelapse
-    Export { output: PathBuf },
+    Export {
+        output: PathBuf,
+        /// Export the uncensored timelapse
+        #[arg(long)]
+        uncensored: bool,
+    },
     /// Show what the AI models think of an image or a video frame (for tuning thresholds)
     Inspect {
         file: PathBuf,
@@ -275,8 +290,14 @@ fn real_main(cli: Cli) -> Result<()> {
         Cmd::Status => status(&cli)?,
         Cmd::Nights => {
             let app = open_app(&cli, false)?;
-            for (night, st, stats, _) in app.db.list_nights()? {
-                println!("{night}  {st:<9} {}", pipeline::describe_night_stats(&stats, app.cfg.analysis.fps));
+            let uncensored = app.cfg.timelapse.uncensored;
+            for n in app.db.list_nights()? {
+                let extra = if uncensored || n.uncensored_segment.is_some() {
+                    format!(" | uncensored {:>5}", n.uncensored_frames)
+                } else {
+                    String::new()
+                };
+                println!("{}  {:<9} {}{extra}", n.night, n.status, pipeline::describe_night_stats(&n.stats, app.cfg.analysis.fps));
             }
         }
         Cmd::Rebuild { reencode } => {
@@ -287,25 +308,27 @@ fn real_main(cli: Cli) -> Result<()> {
                 pipeline::rebuild_master(&app.cfg, &app.db)?;
             }
         }
-        Cmd::Redact { from, to } => {
+        Cmd::Redact { from, to, also_uncensored } => {
             let app = open_app(&cli, true)?;
             let (a, b) = (pipeline::parse_local(&app.clock, from)?, pipeline::parse_local(&app.clock, to)?);
-            let n = pipeline::redact(&app.cfg, &app.db, a, b)?;
-            println!(
-                "removed {n} frames between {} and {}; this range stays excluded for future processing too",
-                pipeline::fmt(&app.clock, a),
-                pipeline::fmt(&app.clock, b)
-            );
+            for (v, n) in pipeline::redact(&app.cfg, &app.db, a, b, *also_uncensored)? {
+                let what = if v == Variant::Uncensored { "the uncensored timelapse" } else { "the timelapse" };
+                println!("removed {n} frames between {} and {} from {what}", pipeline::fmt(&app.clock, a), pipeline::fmt(&app.clock, b));
+            }
+            println!("this range stays excluded for future processing too");
         }
-        Cmd::Reprocess { night } => {
-            let app = open_app(&cli, true)?;
-            let n = parse_date(night)?;
-            pipeline::reset_night(&app.db, &app.clock, n)?;
-            pipeline::process_ready(&app.cfg, &app.db, &app.clock, stop_flag())?;
-        }
-        Cmd::Export { output } => {
+        Cmd::Reprocess { night, to } => reprocess(&cli, night, to.as_deref())?,
+        Cmd::Export { output, uncensored } => {
             let app = open_app(&cli, false)?;
-            video::ffmpeg::export(&app.cfg.output_path(), output)?;
+            let v = if *uncensored { Variant::Uncensored } else { Variant::Censored };
+            let src = app.db.master(v)?.map(|m| PathBuf::from(m.path)).unwrap_or_else(|| app.cfg.output_path(v));
+            if !src.exists() {
+                bail!("{} does not exist yet", src.display());
+            }
+            if v == Variant::Uncensored {
+                pipeline::night::create_private(output)?;
+            }
+            video::ffmpeg::export(&src, output)?;
             println!("written {}", output.display());
         }
         Cmd::Inspect { file, at } => inspect(&cli, file, *at)?,
@@ -315,6 +338,57 @@ fn real_main(cli: Cli) -> Result<()> {
             models::fetch(&dir, !*no_clip)?;
             println!("models are in {}", dir.display());
         }
+    }
+    Ok(())
+}
+
+fn reprocess(cli: &Cli, first: &str, last: Option<&str>) -> Result<()> {
+    let app = open_app(cli, true)?;
+    let first = parse_date(first)?;
+    let last = last.map(parse_date).transpose()?.unwrap_or(first);
+    if last < first {
+        bail!("--to is before the first day");
+    }
+    let stop = stop_flag();
+    let mut camera: Option<tapo::Tapo> = None;
+    let (mut reset, mut kept) = (0, 0);
+    for day in first.iter_days().take_while(|d| *d <= last) {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        let missing = pipeline::missing_recordings(&app.db, &app.clock, day)?;
+        if !missing.is_empty() {
+            log::info!("day {day}: downloading {} deleted recordings again", missing.len());
+            if camera.is_none() {
+                camera = Some(sync::connect(&app.cfg)?);
+            }
+            if let Err(e) = sync::redownload(&app.cfg, &app.db, &app.clock, camera.as_mut().unwrap(), &missing, &stop) {
+                log::error!("day {day} stays as it is: {e:#}");
+                kept += 1;
+                continue;
+            }
+        }
+        pipeline::reset_night(&app.db, &app.clock, day)?;
+        reset += 1;
+    }
+    log::info!("{reset} days will be processed again{}", if kept > 0 { format!(", {kept} kept unchanged") } else { String::new() });
+    pipeline::process_ready(&app.cfg, &app.db, &app.clock, stop)?;
+    Ok(())
+}
+
+fn print_master(app: &App, v: Variant, name: &str) -> Result<()> {
+    match app.db.master(v)? {
+        Some(m) => {
+            let size = std::fs::metadata(&m.path).map(|md| md.len()).unwrap_or(0);
+            println!(
+                "{name:<13}{} ({}, {:.1} MB, {} nights)",
+                m.path,
+                pipeline::human_duration(m.total_duration as f64 / m.timescale as f64),
+                size as f64 / 1e6,
+                m.segments.len()
+            );
+        }
+        None => println!("{name:<13}not created yet"),
     }
     Ok(())
 }
@@ -333,31 +407,35 @@ fn status(cli: &Cli) -> Result<()> {
         count(RecStatus::Failed)
     );
     let nights = app.db.list_nights()?;
-    let processed: Vec<_> = nights.iter().filter(|n| n.1 == "processed").collect();
-    let frames: i64 = processed.iter().map(|n| n.2.emitted).sum();
-    let private: i64 = processed.iter().map(|n| n.2.skipped_private).sum();
+    let processed: Vec<_> = nights.iter().filter(|n| n.status == "processed" || n.status == "reprocess").collect();
+    let frames: i64 = processed.iter().map(|n| n.stats.emitted).sum();
+    let private: i64 = processed.iter().map(|n| n.stats.skipped_private).sum();
     println!(
         "nights:      {} processed ({} with footage), {} frames in total",
         processed.len(),
-        processed.iter().filter(|n| n.3.is_some()).count(),
+        processed.iter().filter(|n| n.segment.is_some()).count(),
         frames
     );
     println!("privacy:     {:.0} min of footage withheld by the filter", private as f64 / app.cfg.analysis.fps / 60.0);
     if let (Some(first), Some(last)) = (processed.first(), processed.last()) {
-        println!("covering:    {} – {}", first.0, last.0);
+        println!("covering:    {} – {}", first.night, last.night);
     }
-    match app.db.master()? {
-        Some(m) => {
-            let size = std::fs::metadata(&m.path).map(|md| md.len()).unwrap_or(0);
+    print_master(&app, Variant::Censored, "timelapse:")?;
+    if app.cfg.timelapse.uncensored || app.db.master(Variant::Uncensored)?.is_some() {
+        print_master(&app, Variant::Uncensored, "uncensored:")?;
+        // nights processed before the option was switched on
+        let missing: Vec<_> = processed.iter().filter(|n| n.segment.is_some() && n.uncensored_segment.is_none()).collect();
+        if let (true, Some(a), Some(b)) = (app.cfg.timelapse.uncensored, missing.first(), missing.last()) {
             println!(
-                "timelapse:   {} ({}, {:.1} MB, {} nights)",
-                m.path,
-                pipeline::human_duration(m.total_duration as f64 / m.timescale as f64),
-                size as f64 / 1e6,
-                m.segments.len()
+                "             {} older nights have no uncensored version; `tapdream reprocess {} --to {}` adds those still on the SD card",
+                missing.len(),
+                a.night,
+                b.night
             );
         }
-        None => println!("timelapse:   not created yet"),
+        if !app.cfg.timelapse.uncensored {
+            println!("             (timelapse.uncensored is off: this file is no longer extended)");
+        }
     }
     if let Some(e) = app.db.meta_get("encoder")? {
         println!("format:      {e}");
